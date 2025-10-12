@@ -1,2 +1,4 @@
-PyPDF2
+requests
 mistralai
+pandas
+python-dotenv

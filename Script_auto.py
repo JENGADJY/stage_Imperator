@@ -2,6 +2,7 @@ from mistralai import Mistral
 import os
 import pandas as pd
 
+
 client = Mistral(api_key=os.getenv("MISTRAL_KEY"))
 AGENT_ID = os.getenv("MISTRAL_AGENT")  
 
