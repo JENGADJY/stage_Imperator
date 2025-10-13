@@ -2,3 +2,5 @@ requests
 mistralai
 pandas
 python-dotenv
+PyPDF2
+tkinter
