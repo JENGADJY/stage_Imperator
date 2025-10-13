@@ -1,3 +1,13 @@
+```env
+
+git init
+git clone 
+```
+
+
+
+
+
 Créez un fichier `.env` à la racine du projet avec le contenu suivant :
 
 ```env
