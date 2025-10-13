@@ -1,49 +1,59 @@
 import os
 import tkinter as tk
-from tkinter import filedialog, messagebox
-from tkinter import ttk
+from tkinter import filedialog, messagebox, ttk
 import pandas as pd
+import time
 from mistralai import Mistral
-from PyPDF2 import PdfReader
+from PyPDF2 import PdfReader, PdfWriter
 import tempfile
-# Chargement des variables d’environnement
 from dotenv import load_dotenv
-load_dotenv()
 
+# --- Chargement des variables d’environnement ---
+load_dotenv()
 client = Mistral(api_key=os.getenv("MISTRAL_KEY"))
 AGENT_ID = os.getenv("MISTRAL_AGENT")
 
-# --- FONCTIONS MÉTIER ---
+# --- UTILITAIRE EXCEL : append sécurisé ---
+def safe_append_to_excel(new_data, output_excel):
+    df_new = pd.DataFrame(new_data)
 
+    if os.path.exists(output_excel):
+        try:
+            df_existing = pd.read_excel(output_excel)
+            print(f"📂 Ancien fichier détecté : {len(df_existing)} lignes")
+            df_combined = pd.concat([df_existing, df_new], ignore_index=True)
+        except Exception as e:
+            print(f"⚠️ Erreur lors de la lecture du fichier Excel : {e}")
+            df_combined = df_new
+    else:
+        print("📄 Nouveau fichier Excel créé")
+        df_combined = df_new
+
+    df_combined.drop_duplicates(subset=["Recto", "Verso"], inplace=True)
+    df_combined.to_excel(output_excel, index=False)
+    print(f"✅ {len(df_combined)} lignes totales dans {output_excel}")
+
+
+# --- OCR par lots ---
 def process_pdf_with_mistral(pdf_path, pages_per_batch=10):
-    """
-    OCR multi-pages : découpe le PDF en blocs de `pages_per_batch` pages
-    et concatène les résultats OCR.
-    """
     reader = PdfReader(pdf_path)
     total_pages = len(reader.pages)
     all_text = []
-    from PyPDF2 import PdfWriter
 
     for start in range(0, total_pages, pages_per_batch):
         end = min(start + pages_per_batch, total_pages)
         print(f"🧩 Traitement des pages {start + 1} à {end}...")
 
-        # Créer un fichier PDF temporaire pour ces pages
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
             pdf_writer = PdfWriter()
             for i in range(start, end):
                 pdf_writer.add_page(reader.pages[i])
             pdf_writer.write(temp_pdf)
-            temp_path = temp_pdf.name  # On garde le chemin
+            temp_path = temp_pdf.name
 
-        # ✅ Fichier fermé, on peut l’utiliser
         with open(temp_path, "rb") as f:
             upload_res = client.files.upload(
-                file={
-                    "file_name": f"chunk_{start+1}_to_{end}.pdf",
-                    "content": f,
-                },
+                file={"file_name": f"chunk_{start+1}_to_{end}.pdf", "content": f},
                 purpose="ocr"
             )
 
@@ -57,15 +67,13 @@ def process_pdf_with_mistral(pdf_path, pages_per_batch=10):
             include_image_base64=False
         )
 
-        # ✅ Vérifications
         if not ocr_res:
-            print(f"⚠️ OCR a échoué pour les pages {start+1}-{end} (aucune réponse reçue)")
+            print(f"⚠️ OCR a échoué pour les pages {start+1}-{end}")
             continue
 
         pages = getattr(ocr_res, "pages", None) or getattr(ocr_res, "output", None)
-
         if not pages:
-            print(f"⚠️ OCR a échoué pour les pages {start+1}-{end} (aucune donnée dans la réponse)")
+            print(f"⚠️ OCR sans données pour les pages {start+1}-{end}")
             continue
 
         for page in pages:
@@ -84,32 +92,29 @@ def process_pdf_with_mistral(pdf_path, pages_per_batch=10):
     return "\n".join(all_text)
 
 
-
+# --- Traitement principal ---
 def imperator(pdf_verso, pdf_recto, output_excel, progress_callback=None):
-    """Analyse des deux PDF et export Excel"""
-    if progress_callback:
-        progress_callback(10, "Lecture du recto...")
+    start_time = time.time()
 
-    verso_res = process_pdf_with_mistral(pdf_verso)
     if progress_callback:
-        progress_callback(40, "Lecture du verso...")
-
+        progress_callback(5, "Lecture du recto...")
     recto_res = process_pdf_with_mistral(pdf_recto)
+
     if progress_callback:
-        progress_callback(60, "Envoi à l’agent Mistral...")
+        progress_callback(35, "Lecture du verso...")
+    verso_res = process_pdf_with_mistral(pdf_verso)
 
-    text_verso = verso_res
-    text_recto = recto_res
+    if progress_callback:
+        progress_callback(55, "Analyse Mistral en cours...")
 
-    # Envoi à ton agent Mistral
     content = f"""
 Voici deux documents PDF à traiter selon tes instructions :
 
 --- RECTO ---
-{text_recto}
+{recto_res}
 
 --- VERSO ---
-{text_verso}
+{verso_res}
     """
 
     agent_res = client.agents.complete(
@@ -118,10 +123,11 @@ Voici deux documents PDF à traiter selon tes instructions :
     )
 
     response_text = agent_res.choices[0].message.content.strip()
+
     if progress_callback:
         progress_callback(80, "Analyse de la réponse...")
 
-    # Parsing du texte en lignes
+    # Parsing du texte
     lines = [line.strip() for line in response_text.split("\n") if "|" in line]
     data = []
     for line in lines:
@@ -130,27 +136,28 @@ Voici deux documents PDF à traiter selon tes instructions :
             recto, verso = phrases.split("|", 1)
             data.append({
                 "Numéro": num_part.strip(),
-                "Recto":  recto.strip(),
+                "Recto": recto.strip(),
                 "Verso": verso.strip()
             })
         except ValueError:
             data.append({"Numéro": "", "Recto": line, "Verso": ""})
 
-    df = pd.DataFrame(data)
-    df.to_excel(output_excel, index=False)
+    # ✅ Append sécurisé
+    safe_append_to_excel(data, output_excel)
 
     if progress_callback:
-        progress_callback(100, "Terminé ✅")
+        elapsed = round(time.time() - start_time, 2)
+        progress_callback(100, f"Terminé ✅ ({elapsed}s)")
+
     return output_excel
 
 
-# --- INTERFACE TKINTER ---
-
+# --- Interface graphique ---
 class MistralApp:
     def __init__(self, root):
         self.root = root
         self.root.title("📘 OCR Mistral - Recto/Verso")
-        self.root.geometry("500x400")
+        self.root.geometry("520x420")
         self.root.resizable(False, False)
 
         self.pdf_recto = tk.StringVar()
@@ -158,19 +165,19 @@ class MistralApp:
         self.output_excel = tk.StringVar(value="resultats.xlsx")
 
         ttk.Label(root, text="Sélection du PDF RECTO :").pack(pady=(20, 5))
-        ttk.Entry(root, textvariable=self.pdf_recto, width=50).pack()
+        ttk.Entry(root, textvariable=self.pdf_recto, width=55).pack()
         ttk.Button(root, text="Parcourir", command=self.select_recto).pack(pady=5)
 
         ttk.Label(root, text="Sélection du PDF VERSO :").pack(pady=(10, 5))
-        ttk.Entry(root, textvariable=self.pdf_verso, width=50).pack()
+        ttk.Entry(root, textvariable=self.pdf_verso, width=55).pack()
         ttk.Button(root, text="Parcourir", command=self.select_verso).pack(pady=5)
 
         ttk.Label(root, text="Nom du fichier Excel de sortie :").pack(pady=(10, 5))
-        ttk.Entry(root, textvariable=self.output_excel, width=50).pack()
+        ttk.Entry(root, textvariable=self.output_excel, width=55).pack()
 
         ttk.Button(root, text="▶ Lancer le traitement", command=self.run_processing).pack(pady=15)
 
-        self.progress = ttk.Progressbar(root, length=300, mode="determinate")
+        self.progress = ttk.Progressbar(root, length=350, mode="determinate")
         self.progress.pack(pady=(10, 5))
         self.status_label = ttk.Label(root, text="En attente...")
         self.status_label.pack()
@@ -201,12 +208,12 @@ class MistralApp:
 
         try:
             output_path = imperator(verso, recto, output, progress_callback=self.update_progress)
-            messagebox.showinfo("Succès", f"Traitement terminé 🎉\nFichier créé : {output_path}")
+            messagebox.showinfo("Succès", f"Traitement terminé 🎉\nFichier mis à jour : {output_path}")
         except Exception as e:
             messagebox.showerror("Erreur", f"Une erreur est survenue : {e}")
 
 
-# --- LANCEMENT DE L’APPLICATION ---
+# --- Lancement ---
 if __name__ == "__main__":
     root = tk.Tk()
     app = MistralApp(root)
