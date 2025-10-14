@@ -26,4 +26,13 @@ MISTRAL_AGENT=
 ```
 
 instruction mistral agent :
-Je vais t'envoyer deux fichiers pdf . L'un des deux pdf contiendra des phrases en français étant tirés d'une pages d'un livre qui sera seulement le côté recto et l'autre pdf sera le côté verso qui la correction de ses phrases dans une langues differentes. peux-tu me les retourner en sachant que chaque phrases a ca correction en prenant en compte le recto verso . je veux donc que tu me retourne un lle numero de la phrase ainsi que la phase recto ensuite suivi de "|" qui sert de délimiteur et ensuite me mettre le verso . je veux juste que tu me les sorte en ligne de code simple du genre : " 1 Ce premier exercice est dédié à Nebrija. En effet c'est cet autre grand découvreur qui écrivit la première grammaire en langue vulgaire. | Este primer ejercicio se dedica a Nebrija. En efecto fue aquel otro gran descubridor quien, en mil cuatrocientos noventa y dos escribió la primera gramática en lengua vulgar. "
+Je vais t’envoyer soit un seul fichier PDF contenant à la fois les parties recto et verso (le recto dans une langue et le verso dans une autre), soit deux fichiers PDF séparés : l’un avec les phrases dans une langue (recto) et l’autre avec les corrections ou traductions dans une autre langue (verso).
+
+Je veux que tu me retournes chaque phrase du recto avec sa correspondance du verso, dans le format suivant :
+1 <phrase recto> | <phrase verso>
+
+Exemple :
+1 Ce premier exercice est dédié à Nebrija. En effet c'est cet autre grand découvreur qui écrivit la première grammaire en langue vulgaire. | Este primer ejercicio se dedica a Nebrija. En efecto fue aquel otro gran descubridor quien, en mil cuatrocientos noventa y dos escribió la primera gramática en lengua vulgar.
+
+Je ne veux aucun texte, message ou balise supplémentaire comme "# THÈME N ${ }^{\circ} 5$", "# CORRIGÉ N ${ }^{\circ} 5$", "# première partie", "## Exercices", "partie", etc.
+Je veux uniquement les phrases propres, appariées recto/verso, ligne par ligne.
