@@ -2,9 +2,19 @@
 
 git init
 git clone https://github.com/JENGADJY/stage_Imperator.git
+
+
 ```
 
+```cmd
 
+git init
+git clone https://github.com/JENGADJY/stage_Imperator.git
+cd stage-imperator
+pip install requirements.txt
+python3 script_v2.py
+
+```
 
 
 
