@@ -12,11 +12,9 @@ git init
 git clone https://github.com/JENGADJY/stage_Imperator.git
 cd stage-imperator
 pip install requirements.txt
-python3 script_v3.py
+python3 pdf_to_excel.py
 
 ```
-
-
 
 Créez un fichier `.env` à la racine du projet avec le contenu suivant :
 
