@@ -8,11 +8,63 @@ from PyPDF2 import PdfReader, PdfWriter
 import tempfile
 from dotenv import load_dotenv
 import re
+import requests  # 🔥 Pour parler avec AnkiConnect
 
 # --- Chargement des variables d’environnement ---
 load_dotenv()
 client = Mistral(api_key=os.getenv("MISTRAL_KEY"))
 AGENT_ID = os.getenv("MISTRAL_AGENT")
+
+ANKI_CONNECT_URL = "http://localhost:8765"
+
+# --- Vérifier la connexion à AnkiConnect ---
+def test_anki_connection():
+    try:
+        res = requests.post(ANKI_CONNECT_URL, json={"action": "version", "version": 6})
+        if res.status_code == 200 and "result" in res.json():
+            return True
+    except Exception:
+        pass
+    return False
+
+# --- Envoyer un fichier Excel vers Anki ---
+def send_to_anki(excel_path, deck_name="RectoVerso"):
+    if not os.path.exists(excel_path):
+        messagebox.showerror("Erreur", f"Le fichier {excel_path} n’existe pas.")
+        return
+
+    if not test_anki_connection():
+        messagebox.showerror("Erreur", "AnkiConnect ne répond pas.\nAssure-toi qu’Anki est ouvert et que le module AnkiConnect est installé.")
+        return
+
+    df = pd.read_excel(excel_path)
+    added = 0
+
+    for _, row in df.iterrows():
+        recto = str(row.get("Recto", "")).strip()
+        verso = str(row.get("Verso", "")).strip()
+        print(f"Recto: '{recto}', Verso: '{verso}'")  # Debug
+        if not recto or not verso:
+            continue
+
+        payload = {
+            "action": "addNote",
+            "version": 6,
+            "params": {
+                "note": {
+                    "deckName": deck_name,
+                    "modelName": "Basic",
+                    "fields": {"Recto": recto, "Verso": verso},
+                    "tags": ["auto_import"]
+                }
+            }
+        }
+        res = requests.post(ANKI_CONNECT_URL, json=payload).json()
+        print(f"Réponse AnkiConnect : {res}")  # Debug
+        if res.get("error") is None:
+            added += 1
+
+    messagebox.showinfo("Anki", f"✅ {added} cartes ajoutées au deck '{deck_name}' avec succès !")
 
 # --- UTILITAIRE EXCEL : append sécurisé ---
 def safe_append_to_excel(new_data, output_excel):
@@ -20,14 +72,12 @@ def safe_append_to_excel(new_data, output_excel):
     if os.path.exists(output_excel):
         try:
             df_existing = pd.read_excel(output_excel)
-            print(f"📂 Ancien fichier détecté : {len(df_existing)} lignes")
             df_combined = pd.concat([df_existing, df_new], ignore_index=True)
-        except Exception as e:
-            print(f"⚠️ Erreur lors de la lecture du fichier Excel : {e}")
+        except Exception:
             df_combined = df_new
     else:
-        print("📄 Nouveau fichier Excel créé")
         df_combined = df_new
+
     df_combined.drop_duplicates(subset=["Recto", "Verso"], inplace=True)
     df_combined.to_excel(output_excel, index=False)
     print(f"✅ {len(df_combined)} lignes totales dans {output_excel}")
@@ -39,7 +89,6 @@ def process_pdf_with_mistral(pdf_path, pages_per_batch=10):
     all_text = []
     for start in range(0, total_pages, pages_per_batch):
         end = min(start + pages_per_batch, total_pages)
-        print(f"🧩 Traitement des pages {start + 1} à {end}...")
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
             pdf_writer = PdfWriter()
             for i in range(start, end):
@@ -59,143 +108,61 @@ def process_pdf_with_mistral(pdf_path, pages_per_batch=10):
             document={"type": "document_url", "document_url": document_url},
             include_image_base64=False
         )
-        if not ocr_res:
-            print(f"⚠️ OCR a échoué pour les pages {start+1}-{end}")
-            continue
         pages = getattr(ocr_res, "pages", None) or getattr(ocr_res, "output", None)
         if not pages:
-            print(f"⚠️ OCR sans données pour les pages {start+1}-{end}")
             continue
         for page in pages:
             if hasattr(page, "markdown"):
                 all_text.append(page.markdown)
             elif isinstance(page, str):
                 all_text.append(page)
-        print(f"✅ OCR réussi pour les pages {start+1}-{end}")
-        try:
-            os.remove(temp_path)
-        except PermissionError:
-            print(f"⚠️ Impossible de supprimer {temp_path} (encore utilisé)")
+        os.remove(temp_path)
     return "\n".join(all_text)
 
-# --- Filtrer les lignes indésirables ---
+# --- Nettoyage et traitement principal ---
 def filtrer_lignes_indesirables(lignes):
-    motifs_indesirables = [
-        r"# THÈME N \$\{.*\}",  
-        r"# CORRIGÉ N \$\{.*\}", 
-        r"# premie re partie",  
-        r"# \$\w+",  
-        r"## Exercices",  
-        r"partie", 
-    ]
+    motifs = [r"# THÈME", r"# CORRIGÉ", r"partie", r"##"]
+    return [l for l in lignes if not any(re.search(m, l) for m in motifs)]
 
-    lignes_filtrees = []
-    for ligne in lignes:
-        indesirable = False
-        for motif in motifs_indesirables:
-            if re.search(motif, ligne):
-                indesirable = True
-                break
-        if not indesirable:
-            lignes_filtrees.append(ligne)
-    return lignes_filtrees
-
-# --- Identifier les lignes non appariées ---
-def identifier_lignes_non_appariees(recto_lines, verso_lines):
-    min_length = min(len(recto_lines), len(verso_lines))
-    lignes_non_appariees = []
-
-    for i in range(min_length):
-        if recto_lines[i] != verso_lines[i]:
-            lignes_non_appariees.append((i + 1, recto_lines[i], verso_lines[i]))
-
-    # Ajouter les lignes supplémentaires si un fichier est plus long que l'autre
-    if len(recto_lines) > min_length:
-        for i in range(min_length, len(recto_lines)):
-            lignes_non_appariees.append((i + 1, recto_lines[i], "---"))
-
-    if len(verso_lines) > min_length:
-        for i in range(min_length, len(verso_lines)):
-            lignes_non_appariees.append((i + 1, "---", verso_lines[i]))
-
-    return lignes_non_appariees
-
-# --- Traitement principal ---
 def imperator(pdf_verso, pdf_recto, output_excel, progress_callback=None):
     start_time = time.time()
-    if progress_callback:
-        progress_callback(5, "Lecture du recto...")
     recto_res = process_pdf_with_mistral(pdf_recto)
-    if progress_callback:
-        progress_callback(35, "Lecture du verso...")
     verso_res = process_pdf_with_mistral(pdf_verso)
-
-    if progress_callback:
-        progress_callback(55, "Nettoyage des données...")
-
-    # Nettoyage des lignes
-    recto_lines = [line.strip() for line in recto_res.split('\n') if line.strip()]
-    verso_lines = [line.strip() for line in verso_res.split('\n') if line.strip()]
-
-    # Filtrer les lignes indésirables
-    recto_lines = filtrer_lignes_indesirables(recto_lines)
-    verso_lines = filtrer_lignes_indesirables(verso_lines)
-
-    print(f"Nombre de lignes recto après nettoyage : {len(recto_lines)}")
-    print(f"Nombre de lignes verso après nettoyage : {len(verso_lines)}")
-
-    # Identifier les lignes non appariées
-    lignes_non_appariees = identifier_lignes_non_appariees(recto_lines, verso_lines)
-
-    if lignes_non_appariees:
-        print("\nLignes non appariées :")
-        for num, recto, verso in lignes_non_appariees:
-            print(f"{num} : Recto: {recto} | Verso: {verso}")
-
-    # Vérification de la longueur
-    if len(recto_lines) != len(verso_lines):
-        print(f"Attention : Le nombre de lignes ne correspond pas. Recto: {len(recto_lines)}, Verso: {len(verso_lines)}")
-        min_length = min(len(recto_lines), len(verso_lines))
-        recto_lines = recto_lines[:min_length]
-        verso_lines = verso_lines[:min_length]
-
-    if progress_callback:
-        progress_callback(70, "Appariement des phrases...")
-
-    # Appariement des phrases
-    data = []
-    for recto, verso in zip(recto_lines, verso_lines):
-        data.append({
-            "Recto": recto,
-            "Verso": verso
-        })
-
-    # ✅ Append sécurisé
+    recto_lines = filtrer_lignes_indesirables([l.strip() for l in recto_res.split('\n') if l.strip()])
+    verso_lines = filtrer_lignes_indesirables([l.strip() for l in verso_res.split('\n') if l.strip()])
+    min_len = min(len(recto_lines), len(verso_lines))
+    data = [{"Recto": recto_lines[i], "Verso": verso_lines[i]} for i in range(min_len)]
     safe_append_to_excel(data, output_excel)
-    if progress_callback:
-        elapsed = round(time.time() - start_time, 2)
-        progress_callback(100, f"Terminé ✅ ({elapsed}s)")
+    elapsed = round(time.time() - start_time, 2)
+    progress_callback(100, f"Terminé ✅ ({elapsed}s)")
     return output_excel
 
 # --- Interface graphique ---
 class MistralApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("📘 OCR Mistral - Recto/Verso")
-        self.root.geometry("520x420")
+        self.root.title("📘 OCR Mistral - Recto/Verso + Anki")
+        self.root.geometry("520x460")
         self.root.resizable(False, False)
+
         self.pdf_recto = tk.StringVar()
         self.pdf_verso = tk.StringVar()
         self.output_excel = tk.StringVar(value="resultats.xlsx")
+
         ttk.Label(root, text="Sélection du PDF RECTO :").pack(pady=(20, 5))
         ttk.Entry(root, textvariable=self.pdf_recto, width=55).pack()
         ttk.Button(root, text="Parcourir", command=self.select_recto).pack(pady=5)
+
         ttk.Label(root, text="Sélection du PDF VERSO :").pack(pady=(10, 5))
         ttk.Entry(root, textvariable=self.pdf_verso, width=55).pack()
         ttk.Button(root, text="Parcourir", command=self.select_verso).pack(pady=5)
+
         ttk.Label(root, text="Nom du fichier Excel de sortie :").pack(pady=(10, 5))
         ttk.Entry(root, textvariable=self.output_excel, width=55).pack()
-        ttk.Button(root, text="▶ Lancer le traitement", command=self.run_processing).pack(pady=15)
+
+        ttk.Button(root, text="▶ Lancer le traitement", command=self.run_processing).pack(pady=10)
+        ttk.Button(root, text="📥 Envoyer vers Anki", command=self.send_to_anki).pack(pady=5)
+
         self.progress = ttk.Progressbar(root, length=350, mode="determinate")
         self.progress.pack(pady=(10, 5))
         self.status_label = ttk.Label(root, text="En attente...")
@@ -203,13 +170,11 @@ class MistralApp:
 
     def select_recto(self):
         path = filedialog.askopenfilename(filetypes=[("Fichiers PDF", "*.pdf")])
-        if path:
-            self.pdf_recto.set(path)
+        if path: self.pdf_recto.set(path)
 
     def select_verso(self):
         path = filedialog.askopenfilename(filetypes=[("Fichiers PDF", "*.pdf")])
-        if path:
-            self.pdf_verso.set(path)
+        if path: self.pdf_verso.set(path)
 
     def update_progress(self, value, message):
         self.progress["value"] = value
@@ -217,9 +182,7 @@ class MistralApp:
         self.root.update_idletasks()
 
     def run_processing(self):
-        recto = self.pdf_recto.get()
-        verso = self.pdf_verso.get()
-        output = self.output_excel.get()
+        recto, verso, output = self.pdf_recto.get(), self.pdf_verso.get(), self.output_excel.get()
         if not recto or not verso:
             messagebox.showerror("Erreur", "Merci de sélectionner les deux fichiers PDF.")
             return
@@ -228,6 +191,10 @@ class MistralApp:
             messagebox.showinfo("Succès", f"Traitement terminé 🎉\nFichier mis à jour : {output_path}")
         except Exception as e:
             messagebox.showerror("Erreur", f"Une erreur est survenue : {e}")
+
+    def send_to_anki(self):
+        output = self.output_excel.get()
+        send_to_anki(output)
 
 # --- Lancement ---
 if __name__ == "__main__":
