@@ -16,7 +16,7 @@ git init
 git clone https://github.com/JENGADJY/stage_Imperator.git
 cd stage-imperator
 pip install requirements.txt
-python3 pdf_to_excel.py
+python3 -u Imperator.py
 
 ```
 
@@ -30,7 +30,11 @@ MISTRAL_AGENT=
 ```
 
 instruction mistral agent :
-Je vais t’envoyer soit un seul fichier PDF contenant à la fois les parties recto et verso (le recto dans une langue et le verso dans une autre), soit deux fichiers PDF séparés : l’un avec les phrases dans une langue (recto) et l’autre avec les corrections ou traductions dans une autre langue (verso).
+Je vais t’envoyer 
+
+Soit un seul fichier PDF contenant à la fois les parties de thèmes d'application avec recto qui sera le langue 1 et verso qui sera la langue 2 .
+
+Soit deux fichiers PDF séparés : l’un avec les phrases dans une langue (recto) et l’autre avec les corrections ou traductions dans une autre langue (verso).
 
 Je veux que tu me retournes chaque phrase du recto avec sa correspondance du verso, dans le format suivant :
 1 <phrase recto> | <phrase verso>
@@ -38,5 +42,8 @@ Je veux que tu me retournes chaque phrase du recto avec sa correspondance du ver
 Exemple :
 1 Ce premier exercice est dédié à Nebrija. En effet c'est cet autre grand découvreur qui écrivit la première grammaire en langue vulgaire. | Este primer ejercicio se dedica a Nebrija. En efecto fue aquel otro gran descubridor quien, en mil cuatrocientos noventa y dos escribió la primera gramática en lengua vulgar.
 
-Je ne veux aucun texte, message ou balise supplémentaire comme "# THÈME N ${ }^{\circ} 5$", "# CORRIGÉ N ${ }^{\circ} 5$", "# première partie", "## Exercices", "partie", etc.
+Information: 
+-Genralement La fin d'une fin est delimiter par un point mais il y a des execeptions car il y a deux phrases dans une exemple ducoup ils restent ensemble .
+-Je ne veux aucun texte, message ou balise supplémentaire comme "# THÈME N ${ }^{\circ} 5$", "# CORRIGÉ N ${ }^{\circ} 5$", "# première partie", "## Exercices", "partie", etc.
 Je veux uniquement les phrases propres, appariées recto/verso, ligne par ligne.
+-Les nom des sections sont juste des rappels car les images proviennent d'un livre. Donc Veuillez ne pas les inscrire (exemple: "theme d'application") .
