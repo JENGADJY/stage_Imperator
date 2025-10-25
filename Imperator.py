@@ -8,12 +8,16 @@ from PyPDF2 import PdfReader, PdfWriter
 import tempfile
 from dotenv import load_dotenv
 import re
-import requests  # Pour AnkiConnect
+import requests
 
 # --- Chargement des variables d’environnement ---
 load_dotenv()
 client = Mistral(api_key=os.getenv("MISTRAL_KEY"))
-AGENT_ID = os.getenv("MISTRAL_AGENT")
+
+# 🔹 3 agents différents selon le mode choisi
+AGENT_ID_RECTO_VERSO = os.getenv("MISTRAL_AGENT_RECTO_VERSO")
+AGENT_ID_COMBINE = os.getenv("MISTRAL_AGENT_COMBINE")
+AGENT_ID_MANUEL = os.getenv("MISTRAL_AGENT_MANUEL")
 
 ANKI_CONNECT_URL = "http://localhost:8765"
 
@@ -48,7 +52,6 @@ def send_to_anki(excel_path, deck_name="RectoVerso", model_name="Basic", field_f
     for _, row in df.iterrows():
         recto = str(row.get(field_front, "")).strip()
         verso = str(row.get(field_back, "")).strip()
-        print(f"Recto: '{recto}', Verso: '{verso}'")  
         if not recto or not verso:
             continue
 
@@ -66,7 +69,6 @@ def send_to_anki(excel_path, deck_name="RectoVerso", model_name="Basic", field_f
         }
 
         res = requests.post(ANKI_CONNECT_URL, json=payload).json()
-        print(f"Réponse AnkiConnect : {res}")  
         if res.get("error") is None:
             added += 1
 
@@ -90,7 +92,7 @@ def safe_append_to_excel(new_data, output_excel):
 
 
 # --- OCR par lots ---
-def process_pdf_with_mistral(pdf_path, pages_per_batch=10):
+def process_pdf_with_mistral(pdf_path, agent_id, pages_per_batch=10):
     reader = PdfReader(pdf_path)
     total_pages = len(reader.pages)
     all_text = []
@@ -111,11 +113,14 @@ def process_pdf_with_mistral(pdf_path, pages_per_batch=10):
         file_id = upload_res.id
         signed = client.files.get_signed_url(file_id=file_id)
         document_url = signed.url
+
         ocr_res = client.ocr.process(
             model="mistral-ocr-latest",
             document={"type": "document_url", "document_url": document_url},
-            include_image_base64=False
+            include_image_base64=False,
+            agent_id=agent_id
         )
+
         pages = getattr(ocr_res, "pages", None) or getattr(ocr_res, "output", None)
         if not pages:
             continue
@@ -130,14 +135,15 @@ def process_pdf_with_mistral(pdf_path, pages_per_batch=10):
 
 # --- Nettoyage et traitement principal ---
 def filtrer_lignes_indesirables(lignes):
-    motifs = [r"# THÈME", r"# CORRIGÉ", r"partie", r"##"]
+    motifs = [r"# THÈME", r"# CORRIGÉ", r"exercice", r"partie", r"VOCABULAIRE", r"Chapitre", r"##", r"$=$"]
     return [l for l in lignes if not any(re.search(m, l) for m in motifs)]
 
 
 def imperator(pdf_verso, pdf_recto, output_excel, progress_callback=None):
+    """Mode Recto/Verso"""
     start_time = time.time()
-    recto_res = process_pdf_with_mistral(pdf_recto)
-    verso_res = process_pdf_with_mistral(pdf_verso)
+    recto_res = process_pdf_with_mistral(pdf_recto, AGENT_ID_RECTO_VERSO)
+    verso_res = process_pdf_with_mistral(pdf_verso, AGENT_ID_RECTO_VERSO)
     recto_lines = filtrer_lignes_indesirables([l.strip() for l in recto_res.split('\n') if l.strip()])
     verso_lines = filtrer_lignes_indesirables([l.strip() for l in verso_res.split('\n') if l.strip()])
     min_len = min(len(recto_lines), len(verso_lines))
@@ -148,17 +154,53 @@ def imperator(pdf_verso, pdf_recto, output_excel, progress_callback=None):
     return output_excel
 
 
+def imperator_combine(pdf_combine, output_excel, progress_callback=None):
+    """Mode fichier combiné"""
+    start_time = time.time()
+    res = process_pdf_with_mistral(pdf_combine, AGENT_ID_COMBINE)
+    lignes = filtrer_lignes_indesirables([l.strip() for l in res.split('\n') if l.strip()])
+
+    data = []
+    for l in lignes:
+        if ":" in l:
+            parts = l.split(":", 1)
+            data.append({"Recto": parts[0].strip(), "Verso": parts[1].strip()})
+    safe_append_to_excel(data, output_excel)
+    elapsed = round(time.time() - start_time, 2)
+    progress_callback(100, f"Terminé ✅ ({elapsed}s)")
+    return output_excel
+
+
+def imperator_manuel(pdf_unique, output_excel, progress_callback=None):
+    """Mode Manuel"""
+    start_time = time.time()
+    res = process_pdf_with_mistral(pdf_unique, AGENT_ID_MANUEL)
+    lignes = filtrer_lignes_indesirables([l.strip() for l in res.split('\n') if l.strip()])
+
+    data = []
+    for l in lignes:
+        if ":" in l:
+            parts = l.split(":", 1)
+            data.append({"Recto": parts[0].strip(), "Verso": parts[1].strip()})
+    safe_append_to_excel(data, output_excel)
+    elapsed = round(time.time() - start_time, 2)
+    progress_callback(100, f"Terminé ✅ ({elapsed}s)")
+    return output_excel
+
+
 # --- Interface graphique ---
 class MistralApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("📘 OCR Mistral - Recto/Verso + Anki")
-        self.root.geometry("540x670")
+        self.root.title("📘 OCR Mistral - Multi Mode + Anki")
+        self.root.geometry("600x740")
         self.root.resizable(False, False)
 
         # --- Variables ---
+        self.mode = tk.StringVar(value="recto_verso")
         self.pdf_recto = tk.StringVar()
         self.pdf_verso = tk.StringVar()
+        self.pdf_unique = tk.StringVar()
         self.output_excel = tk.StringVar(value="resultats_traitement.xlsx")
         self.output_excel_anki = tk.StringVar(value="cartes_anki.xlsx")
 
@@ -167,17 +209,17 @@ class MistralApp:
         self.field_front = tk.StringVar(value="Recto")
         self.field_back = tk.StringVar(value="Verso")
 
-        # --- Fichiers PDF ---
-        ttk.Label(root, text="Sélection du PDF RECTO :").pack(pady=(15, 5))
-        ttk.Entry(root, textvariable=self.pdf_recto, width=55).pack()
-        ttk.Button(root, text="Parcourir", command=self.select_recto).pack(pady=5)
+        # --- Choix du mode ---
+        ttk.Label(root, text="🧩 Sélection du mode :").pack(pady=(10, 5))
+        frm_mode = ttk.Frame(root)
+        frm_mode.pack()
+        for mode, text in [("recto_verso", "Recto/Verso"), ("combine", "Fichier combiné"), ("manuel", "Manuel (1 PDF)")]:
+            ttk.Radiobutton(frm_mode, text=text, variable=self.mode, value=mode, command=self.update_file_inputs).pack(side="left", padx=10)
 
-        ttk.Label(root, text="Sélection du PDF VERSO :").pack(pady=(10, 5))
-        ttk.Entry(root, textvariable=self.pdf_verso, width=55).pack()
-        ttk.Button(root, text="Parcourir", command=self.select_verso).pack(pady=5)
-
-        ttk.Label(root, text="Nom du fichier Excel (OCR) :").pack(pady=(10, 5))
-        ttk.Entry(root, textvariable=self.output_excel, width=55).pack()
+        # --- Zone dynamique ---
+        self.frm_files = ttk.Frame(root)
+        self.frm_files.pack(pady=10)
+        self.update_file_inputs()
 
         # --- Bouton traitement ---
         ttk.Button(root, text="▶ Lancer le traitement", command=self.run_processing).pack(pady=15)
@@ -212,7 +254,35 @@ class MistralApp:
 
         ttk.Button(root, text="📥 Envoyer vers Anki", command=self.send_to_anki).pack(pady=10)
 
-    # --- Sélecteurs de fichiers ---
+    # --- Mise à jour dynamique de l'interface selon le mode ---
+    def update_file_inputs(self):
+        for widget in self.frm_files.winfo_children():
+            widget.destroy()
+
+        mode = self.mode.get()
+        if mode == "recto_verso":
+            ttk.Label(self.frm_files, text="📄 Sélection du PDF RECTO :").pack()
+            ttk.Entry(self.frm_files, textvariable=self.pdf_recto, width=55).pack()
+            ttk.Button(self.frm_files, text="Parcourir", command=self.select_recto).pack(pady=3)
+
+            ttk.Label(self.frm_files, text="📄 Sélection du PDF VERSO :").pack(pady=(10, 0))
+            ttk.Entry(self.frm_files, textvariable=self.pdf_verso, width=55).pack()
+            ttk.Button(self.frm_files, text="Parcourir", command=self.select_verso).pack(pady=3)
+
+        elif mode == "combine":
+            ttk.Label(self.frm_files, text="📄 Sélection du PDF combiné :").pack()
+            ttk.Entry(self.frm_files, textvariable=self.pdf_unique, width=55).pack()
+            ttk.Button(self.frm_files, text="Parcourir", command=self.select_unique).pack(pady=3)
+
+        elif mode == "manuel":
+            ttk.Label(self.frm_files, text="📄 Sélection du PDF manuel :").pack()
+            ttk.Entry(self.frm_files, textvariable=self.pdf_unique, width=55).pack()
+            ttk.Button(self.frm_files, text="Parcourir", command=self.select_unique).pack(pady=3)
+
+        ttk.Label(self.frm_files, text="📊 Nom du fichier Excel :").pack(pady=(10, 0))
+        ttk.Entry(self.frm_files, textvariable=self.output_excel, width=55).pack()
+
+    # --- Sélecteurs ---
     def select_recto(self):
         path = filedialog.askopenfilename(filetypes=[("Fichiers PDF", "*.pdf")])
         if path:
@@ -223,20 +293,42 @@ class MistralApp:
         if path:
             self.pdf_verso.set(path)
 
-    # --- Mise à jour de la progression ---
+    def select_unique(self):
+        path = filedialog.askopenfilename(filetypes=[("Fichiers PDF", "*.pdf")])
+        if path:
+            self.pdf_unique.set(path)
+
+    # --- Progression ---
     def update_progress(self, value, message):
         self.progress["value"] = value
         self.status_label.config(text=message)
         self.root.update_idletasks()
 
-    # --- Traitement OCR ---
+    # --- Traitement selon le mode ---
     def run_processing(self):
-        recto, verso, output = self.pdf_recto.get(), self.pdf_verso.get(), self.output_excel.get()
-        if not recto or not verso:
-            messagebox.showerror("Erreur", "Merci de sélectionner les deux fichiers PDF.")
-            return
+        mode = self.mode.get()
         try:
-            output_path = imperator(verso, recto, output, progress_callback=self.update_progress)
+            if mode == "recto_verso":
+                recto, verso, output = self.pdf_recto.get(), self.pdf_verso.get(), self.output_excel.get()
+                if not recto or not verso:
+                    messagebox.showerror("Erreur", "Merci de sélectionner les deux fichiers PDF.")
+                    return
+                output_path = imperator(verso, recto, output, progress_callback=self.update_progress)
+
+            elif mode == "combine":
+                pdf, output = self.pdf_unique.get(), self.output_excel.get()
+                if not pdf:
+                    messagebox.showerror("Erreur", "Merci de sélectionner un fichier PDF combiné.")
+                    return
+                output_path = imperator_combine(pdf, output, progress_callback=self.update_progress)
+
+            elif mode == "manuel":
+                pdf, output = self.pdf_unique.get(), self.output_excel.get()
+                if not pdf:
+                    messagebox.showerror("Erreur", "Merci de sélectionner un fichier PDF pour le mode manuel.")
+                    return
+                output_path = imperator_manuel(pdf, output, progress_callback=self.update_progress)
+
             messagebox.showinfo("Succès", f"Traitement terminé 🎉\nFichier mis à jour : {output_path}")
         except Exception as e:
             messagebox.showerror("Erreur", f"Une erreur est survenue : {e}")
