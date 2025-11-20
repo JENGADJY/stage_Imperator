@@ -182,15 +182,14 @@ def verifier_traduction(espagnol, francais, client, seuil_similarite=0.6):
 
 def apparier_phrases(recto_lines, verso_lines, mistral_client=None, verifier=False):
     """Essaie d’apparier les phrases espagnoles et françaises + vérifie la traduction si demandé."""
-    numero_regex = re.compile(r'^\s*(?<!\d)(\d{1,2})(?!\d)[\.\)]?\s+')
     data = []
     i = j = 0
     while i < len(recto_lines) and j < len(verso_lines):
         esp = recto_lines[i]
         fra = verso_lines[j]
 
-        num_recto = numero_regex.match(esp)
-        num_verso = numero_regex.match(fra)
+        num_recto = re.match(r'^(\d+)[\.\)]', esp)
+        num_verso = re.match(r'^(\d+)[\.\)]', fra)
 
         # Gestion de l'ordre
         if num_recto and num_verso and num_recto.group(1) != num_verso.group(1):
