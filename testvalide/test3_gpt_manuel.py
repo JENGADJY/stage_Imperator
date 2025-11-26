@@ -179,25 +179,32 @@ def apparier_phrases(recto_lines, verso_lines, mistral_client=None,):
 
 def apparier_par_chatgpt(lignes):
     """
-    Envoie les lignes OCR à ChatGPT et récupère des paires Recto/Verso
-    au format texte simple.
+    Analyse les lignes OCR via ChatGPT et retourne 
+    une liste de paires {Recto, Verso}.
     """
 
     prompt = f"""
-    Voici du texte OCR :
+    Tu es un assistant expert en vocabulaire bilingue (espagnol/français).
 
-    {lignes}
+    Voici du texte brut issu d'un OCR. Certaines lignes contiennent un mot ou une phrase
+    et sa traduction. D'autres sont du bruit ou du contenu inutile.
 
     ➤ Objectif :
-      - Extrais uniquement les paires de vocabulaire.
-      - Formate STRICTEMENT la réponse ainsi :
+      - Extraire uniquement les paires légitimes (mot/expression + traduction).
+      - Détecter automatiquement la langue.
+      - Enlever tout ce qui n’est pas du vocabulaire.
+      - Apparier correctement les deux côtés.
+      - Retourner du JSON **strictement valide** sous cette forme :
 
-        Recto : mot ou phrase
-        Verso : traduction
+        [
+          {{ "recto": "texte original", "verso": "traduction" }},
+          ...
+        ]
 
-        (puis répète autant de fois que nécessaire)
+    Voici les lignes à analyser :
+    {lignes}
 
-    ⚠️ Aucun JSON, aucun commentaire.
+    Répond STRICTEMENT avec du JSON valide, sans texte avant ou après.
     """
 
     try:
@@ -205,32 +212,27 @@ def apparier_par_chatgpt(lignes):
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
+            max_tokens=1200
         )
 
-        text = response.choices[0].message.content.strip()
-        lignes = text.split("\n")
+        # ACCÈS CORRECT AU TEXTE
+        content = response.choices[0].message.content.strip()
 
-        data = []
-        recto = verso = None
+        import json
+        pairs = json.loads(content)
 
-        for line in lignes:
-            if line.lower().startswith("recto"):
-                recto = line.split(":", 1)[1].strip()
-            elif line.lower().startswith("verso"):
-                verso = line.split(":", 1)[1].strip()
+        final = []
+        for p in pairs:
+            final.append({
+                "Recto": p.get("recto", "").strip(),
+                "Verso": p.get("verso", "").strip()
+            })
 
-            # Quand on a un couple complet
-            if recto and verso:
-                data.append({"Recto": recto, "Verso": verso})
-                recto = verso = None
-
-        return data
+        return final
 
     except Exception as e:
         print("❌ Erreur ChatGPT :", e)
         return []
-
-
 
 
 # =======================================================
