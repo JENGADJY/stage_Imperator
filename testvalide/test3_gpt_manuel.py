@@ -9,15 +9,19 @@ import tempfile
 from dotenv import load_dotenv
 import re
 import requests
+from openai import OpenAI
+
+
 
 # --- Chargement des variables d’environnement ---
 load_dotenv()
 client = Mistral(api_key=os.getenv("MISTRAL_KEY"))
+client_gpt = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # 🔹 Agents différents selon le mode choisi
 AGENT_ID_RECTO_VERSO = os.getenv("MISTRAL_AGENT_RECTO_VERSO")
 AGENT_ID_COMBINE = os.getenv("MISTRAL_AGENT_RECTO_VERSO")
-AGENT_ID_MANUEL = os.getenv("MISTRAL_AGENT_RECTO_VERSO")
+
 
 ANKI_CONNECT_URL = "http://localhost:8765"
 
@@ -138,49 +142,16 @@ def process_pdf_with_mistral(pdf_path, agent_id, pages_per_batch=10):
 
 def nettoyer_texte_brut(texte):
     """Nettoie le texte OCR : supprime les titres, espaces, caractères inutiles."""
-    texte = re.sub(r'\b(Thème|Corrigé|Exercice|Partie|VOCABULAIRE|Chapitre|Première|Exercices|Troisièm e )\b.*', '', texte, flags=re.IGNORECASE)
+    texte = re.sub(r'\b(Thème|Corrigé|Exercice|Partie|VOCABULAIRE|Chapitre)\b.*', '', texte, flags=re.IGNORECASE)
     texte = re.sub(r'#{1,}|={2,}|-{2,}', '', texte)
     texte = re.sub(r'\s{2,}', ' ', texte)
     lignes = [l.strip() for l in texte.split('\n') if l.strip()]
     return lignes
 
 
-def verifier_traduction(L1, L2, client, seuil_similarite=0.6):
-    """
-    Vérifie si la phrase  correspond bien à la traduction .
-    Retourne True si les deux phrases ont le même sens.
-    """
-    prompt = f"""
-    Tu es un vérificateur bilingue. 
-    Compare ces deux phrases et réponds par OUI si la seconde est une traduction fidèle de la première, sinon NON.
-    Phrase  : "{L1}"
-    Phrase traduite : "{L2}"
-    Réponse attendue : OUI ou NON uniquement.
-    """
-
-    try:
-        response = client.chat.complete(
-            model="mistral-large-latest",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=3,
-            temperature=0.0
-        )
-
-        # ✅ Nouvelle structure de réponse
-        if hasattr(response, "choices") and len(response.choices) > 0:
-            content = response.choices[0].message.content.strip().upper()
-        else:
-            print("⚠️ Format inattendu de la réponse :", response)
-            return False
-
-        return content.startswith("OUI")
-    except Exception as e:
-        print(f"⚠️ Erreur vérification : {e}")
-        return False
 
 
-
-def apparier_phrases(recto_lines, verso_lines, mistral_client=None, verifier=False):
+def apparier_phrases(recto_lines, verso_lines, mistral_client=None,):
     """Essaie d’apparier les phrases  + vérifie la traduction si demandé."""
     numero_regex = re.compile(r'^\s*(?<!\d)(\d{1,2})(?!\d)[\.\)]?\s+')
     data = []
@@ -201,17 +172,65 @@ def apparier_phrases(recto_lines, verso_lines, mistral_client=None, verifier=Fal
                 j += 1
                 continue
 
-        # Vérification facultative
-        if verifier:
-            if verifier_traduction(L1, L2, mistral_client):
-                data.append({"Recto": L1, "Verso": L2})
-        else:
-            data.append({"Recto": L1, "Verso": L2})
-
         i += 1
         j += 1
 
     return data
+
+def apparier_par_chatgpt(lignes):
+    """
+    Envoie les lignes OCR à ChatGPT et récupère des paires Recto/Verso
+    au format texte simple.
+    """
+
+    prompt = f"""
+    Voici du texte OCR :
+
+    {lignes}
+
+    ➤ Objectif :
+      - Extrais uniquement les paires de vocabulaire.
+      - Formate STRICTEMENT la réponse ainsi :
+
+        Recto : mot ou phrase
+        Verso : traduction
+
+        (puis répète autant de fois que nécessaire)
+
+    ⚠️ Aucun JSON, aucun commentaire.
+    """
+
+    try:
+        response = client_gpt.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+        )
+
+        text = response.choices[0].message.content.strip()
+        lignes = text.split("\n")
+
+        data = []
+        recto = verso = None
+
+        for line in lignes:
+            if line.lower().startswith("recto"):
+                recto = line.split(":", 1)[1].strip()
+            elif line.lower().startswith("verso"):
+                verso = line.split(":", 1)[1].strip()
+
+            # Quand on a un couple complet
+            if recto and verso:
+                data.append({"Recto": recto, "Verso": verso})
+                recto = verso = None
+
+        return data
+
+    except Exception as e:
+        print("❌ Erreur ChatGPT :", e)
+        return []
+
+
 
 
 # =======================================================
@@ -228,50 +247,37 @@ def imperator(pdf_verso, pdf_recto, output_excel, progress_callback=None, verifi
     recto_lines = nettoyer_texte_brut(recto_res)
     verso_lines = nettoyer_texte_brut(verso_res)
 
-    data = apparier_phrases(recto_lines, verso_lines, mistral_client=client, verifier=verifier)
+    data = apparier_phrases(recto_lines, verso_lines, mistral_client=client)
 
     safe_append_to_excel(data, output_excel)
     elapsed = round(time.time() - start_time, 2)
     progress_callback(100, f"Terminé ✅ ({elapsed}s)")
     return output_excel
 
-
-def imperator_combine(pdf_combine, output_excel, progress_callback=None, verifier=False):
-    """Mode fichier combiné"""
+def imperator_combine(pdf_combine, output_excel, progress_callback=None, ):
     start_time = time.time()
+
+    # OCR
     res = process_pdf_with_mistral(pdf_combine, AGENT_ID_COMBINE)
+
+    # Nettoyage
     lignes = nettoyer_texte_brut(res)
 
-    data = []
-    for l in lignes:
-        if "|" in l:
-            esp, fra = map(str.strip, l.split("|", 1))
-            if not verifier or verifier_traduction(esp, fra, client):
-                data.append({"Recto": esp, "Verso": fra})
+    # Appariement intelligent
+    data = apparier_par_chatgpt(lignes)
 
+    
+
+    # Sauvegarde Excel
     safe_append_to_excel(data, output_excel)
+
     elapsed = round(time.time() - start_time, 2)
     progress_callback(100, f"Terminé ✅ ({elapsed}s)")
     return output_excel
 
 
-def imperator_manuel(pdf_unique, output_excel, progress_callback=None, verifier=False):
-    """Mode Manuel"""
-    start_time = time.time()
-    res = process_pdf_with_mistral(pdf_unique, AGENT_ID_MANUEL)
-    lignes = nettoyer_texte_brut(res)
 
-    data = []
-    for l in lignes:
-        if ":" in l:
-            esp, fra = map(str.strip, l.split(":", 1))
-            if not verifier or verifier_traduction(esp, fra, client):
-                data.append({"Recto": esp, "Verso": fra})
 
-    safe_append_to_excel(data, output_excel)
-    elapsed = round(time.time() - start_time, 2)
-    progress_callback(100, f"Terminé ✅ ({elapsed}s)")
-    return output_excel
 
 
 # =======================================================
@@ -305,8 +311,7 @@ class MistralApp:
         frm_mode.pack()
         for mode, text in [
             ("recto_verso", "Recto/Verso"),
-            ("combine", "Fichier combiné"),
-            ("manuel", "Manuel (1 PDF)")
+            ("combine", "Fichier combiné")
         ]:
             ttk.Radiobutton(frm_mode, text=text, variable=self.mode, value=mode, command=self.update_file_inputs).pack(side="left", padx=10)
 
@@ -315,8 +320,7 @@ class MistralApp:
         self.frm_files.pack(pady=10)
         self.update_file_inputs()
 
-        # --- Options ---
-        ttk.Checkbutton(root, text="🔍 Vérifier les traductions (lent mais précis)", variable=self.verifier_traductions).pack(pady=(0, 10))
+        
 
         # --- Bouton traitement ---
         ttk.Button(root, text="▶ Lancer le traitement", command=self.run_processing).pack(pady=10)
@@ -406,21 +410,16 @@ class MistralApp:
                 if not recto or not verso:
                     messagebox.showerror("Erreur", "Merci de sélectionner les deux fichiers PDF.")
                     return
-                output_path = imperator(verso, recto, output, progress_callback=self.update_progress, verifier=verifier)
+                output_path = imperator(verso, recto, output, progress_callback=self.update_progress)
 
             elif mode == "combine":
                 pdf, output = self.pdf_unique.get(), self.output_excel.get()
                 if not pdf:
                     messagebox.showerror("Erreur", "Merci de sélectionner un fichier PDF combiné.")
                     return
-                output_path = imperator_combine(pdf, output, progress_callback=self.update_progress, verifier=verifier)
+                output_path = imperator_combine(pdf, output, progress_callback=self.update_progress)
 
-            elif mode == "manuel":
-                pdf, output = self.pdf_unique.get(), self.output_excel.get()
-                if not pdf:
-                    messagebox.showerror("Erreur", "Merci de sélectionner un fichier PDF pour le mode manuel.")
-                    return
-                output_path = imperator_manuel(pdf, output, progress_callback=self.update_progress, verifier=verifier)
+           
 
             messagebox.showinfo("Succès", f"Traitement terminé 🎉\nFichier mis à jour : {output_path}")
         except Exception as e:

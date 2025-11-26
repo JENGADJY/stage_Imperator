@@ -138,23 +138,23 @@ def process_pdf_with_mistral(pdf_path, agent_id, pages_per_batch=10):
 
 def nettoyer_texte_brut(texte):
     """Nettoie le texte OCR : supprime les titres, espaces, caractères inutiles."""
-    texte = re.sub(r'\b(Thème|Corrigé|Exercice|Partie|VOCABULAIRE|Chapitre)\b.*', '', texte, flags=re.IGNORECASE)
+    texte = re.sub(r'\b(Thème|Corrigé|Exercice|Partie|VOCABULAIRE|Chapitre|Première|Exercices|Troisièm e )\b.*', '', texte, flags=re.IGNORECASE)
     texte = re.sub(r'#{1,}|={2,}|-{2,}', '', texte)
-    texte = re.sub(r'\s{2,}', ' ', texte)
+    texte = re.sub(r'#+|={2,}|-{2,}', '', texte) 
     lignes = [l.strip() for l in texte.split('\n') if l.strip()]
     return lignes
 
 
-def verifier_traduction(espagnol, francais, client, seuil_similarite=0.6):
+def verifier_traduction(L1, L2, client, seuil_similarite=0.6):
     """
-    Vérifie si la phrase espagnole correspond bien à la traduction française.
+    Vérifie si la phrase  correspond bien à la traduction .
     Retourne True si les deux phrases ont le même sens.
     """
     prompt = f"""
     Tu es un vérificateur bilingue. 
     Compare ces deux phrases et réponds par OUI si la seconde est une traduction fidèle de la première, sinon NON.
-    Phrase espagnole : "{espagnol}"
-    Phrase française : "{francais}"
+    Phrase  : "{L1}"
+    Phrase traduite : "{L2}"
     Réponse attendue : OUI ou NON uniquement.
     """
 
@@ -181,15 +181,16 @@ def verifier_traduction(espagnol, francais, client, seuil_similarite=0.6):
 
 
 def apparier_phrases(recto_lines, verso_lines, mistral_client=None, verifier=False):
-    """Essaie d’apparier les phrases espagnoles et françaises + vérifie la traduction si demandé."""
+    """Essaie d’apparier les phrases  + vérifie la traduction si demandé."""
+    numero_regex = re.compile(r'^\s*(?<!\d)(\d{1,2})(?!\d)[\.\)]?\s+') # "1." -> "1 "
     data = []
     i = j = 0
     while i < len(recto_lines) and j < len(verso_lines):
-        esp = recto_lines[i]
-        fra = verso_lines[j]
+        L1 = recto_lines[i]
+        L2 = verso_lines[j]
 
-        num_recto = re.match(r'^(\d+)[\.\)]', esp)
-        num_verso = re.match(r'^(\d+)[\.\)]', fra)
+        num_recto = numero_regex.match(L1)
+        num_verso = numero_regex.match(L2)
 
         # Gestion de l'ordre
         if num_recto and num_verso and num_recto.group(1) != num_verso.group(1):
@@ -202,10 +203,10 @@ def apparier_phrases(recto_lines, verso_lines, mistral_client=None, verifier=Fal
 
         # Vérification facultative
         if verifier:
-            if verifier_traduction(esp, fra, mistral_client):
-                data.append({"Recto": esp, "Verso": fra})
+            if verifier_traduction(L1, L2, mistral_client):
+                data.append({"Recto": L1, "Verso": L2})
         else:
-            data.append({"Recto": esp, "Verso": fra})
+            data.append({"Recto": L1, "Verso": L2})
 
         i += 1
         j += 1
@@ -227,7 +228,7 @@ def imperator(pdf_verso, pdf_recto, output_excel, progress_callback=None, verifi
     recto_lines = nettoyer_texte_brut(recto_res)
     verso_lines = nettoyer_texte_brut(verso_res)
 
-    data = apparier_phrases(recto_lines, verso_lines, mistral_client=client, verifier=verifier)
+    data = apparier_phrases(recto_lines, verso_lines, mistral_client=client)
 
     safe_append_to_excel(data, output_excel)
     elapsed = round(time.time() - start_time, 2)
@@ -280,7 +281,7 @@ def imperator_manuel(pdf_unique, output_excel, progress_callback=None, verifier=
 class MistralApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("📘 OCR Mistral - Multi Mode + Anki")
+        self.root.title("Imperator")
         self.root.geometry("600x760")
         self.root.resizable(False, False)
 
